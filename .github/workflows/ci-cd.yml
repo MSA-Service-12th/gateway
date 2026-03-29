@@ -1,0 +1,123 @@
+name: Gateway CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: loopang-gateway-ecr
+  ASG_NAME: loopang-gateway-asg
+
+jobs:
+  # =============================================
+  # CI: 빌드 & 테스트 (모든 브랜치)
+  # =============================================
+  ci:
+    name: Build & Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Build with Gradle
+        run: ./gradlew build --no-daemon
+
+      - name: Run tests
+        run: ./gradlew test --no-daemon
+
+  # =============================================
+  # CD: Docker 빌드 → ECR 푸시 → ASG 롤링 배포
+  # main 브랜치 push 시에만 실행
+  # =============================================
+  cd:
+    name: Deploy to Production
+    needs: ci
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push Docker image to ECR
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG .
+          docker tag $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG $ECR_REGISTRY/$ECR_REPOSITORY:latest
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
+
+      - name: Start ASG Instance Refresh
+        run: |
+          aws autoscaling start-instance-refresh \
+            --auto-scaling-group-name $ASG_NAME \
+            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 120}' \
+            --region $AWS_REGION
+
+      - name: Wait for Instance Refresh to complete
+        run: |
+          echo "Waiting for instance refresh to complete..."
+          while true; do
+            STATUS=$(aws autoscaling describe-instance-refreshes \
+              --auto-scaling-group-name $ASG_NAME \
+              --region $AWS_REGION \
+              --query 'InstanceRefreshes[0].Status' \
+              --output text)
+            echo "Current status: $STATUS"
+            if [ "$STATUS" == "Successful" ]; then
+              echo "Instance refresh completed successfully!"
+              break
+            elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ]; then
+              echo "Instance refresh failed with status: $STATUS"
+              exit 1
+            fi
+            sleep 30
+          done
+
+      - name: Verify deployment (health check)
+        run: |
+          echo "Waiting for health check..."
+          sleep 60
+          HEALTH=$(curl -s -o /dev/null -w "%{http_code}" https://loopang.site/actuator/health || true)
+          if [ "$HEALTH" == "200" ]; then
+            echo "Health check passed! (HTTP 200)"
+          else
+            echo "Warning: Health check returned HTTP $HEALTH"
+            echo "Deployment may still be in progress. Please verify manually."
+          fi
