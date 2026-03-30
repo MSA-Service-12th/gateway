@@ -1,4 +1,4 @@
-name: Gateway CI/CD
+name: Gateway CI/CD (Blue/Green)
 
 on:
   push:
@@ -9,7 +9,10 @@ on:
 env:
   AWS_REGION: ap-northeast-2
   ECR_REPOSITORY: loopang-gateway-ecr
-  ASG_NAME: loopang-gateway-asg
+  ALB_ARN: arn:aws:elasticloadbalancing:ap-northeast-2:775935273810:loadbalancer/app/loopang-gateway-alb/0dc6211a130898f3
+  LAUNCH_TEMPLATE_ID: lt-025b757cc7af3b750
+  VPC_ID: vpc-0b5a9f471e94527aa
+  SUBNET_IDS: "subnet-00134fbc900699eb1,subnet-07502e6a5c5560eb8,subnet-04bc8446301c7faeb,subnet-09d786eb10a8ba3e6"
 
 jobs:
   # =============================================
@@ -49,11 +52,12 @@ jobs:
         run: ./gradlew test --no-daemon
 
   # =============================================
-  # CD: Docker 빌드 → ECR 푸시 → ASG 롤링 배포
-  # main 브랜치 push 시에만 실행
+  # CD: Blue/Green 배포 (main push 시에만)
+  # 흐름: Docker Build → ECR Push → Green TG/ASG 생성
+  #       → 헬스체크 → ALB 트래픽 전환 → Blue 정리
   # =============================================
   cd:
-    name: Deploy to Production
+    name: Blue/Green Deploy
     needs: ci
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
@@ -83,41 +87,238 @@ jobs:
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:latest
 
-      - name: Start ASG Instance Refresh
+      # ========================================
+      # 1단계: 현재 Blue 환경 정보 수집
+      # ========================================
+      - name: Get current Blue deployment info
+        id: blue
         run: |
-          aws autoscaling start-instance-refresh \
-            --auto-scaling-group-name $ASG_NAME \
-            --preferences '{"MinHealthyPercentage": 50, "InstanceWarmup": 120}' \
-            --region $AWS_REGION
+          # HTTPS(443) 리스너 ARN 조회
+          LISTENER_ARN=$(aws elbv2 describe-listeners \
+            --load-balancer-arn $ALB_ARN \
+            --query "Listeners[?Port==\`443\`].ListenerArn | [0]" \
+            --output text)
+          echo "listener_arn=$LISTENER_ARN" >> $GITHUB_OUTPUT
 
-      - name: Wait for Instance Refresh to complete
+          # 현재 활성 Target Group ARN 조회 (= Blue)
+          BLUE_TG_ARN=$(aws elbv2 describe-listeners \
+            --load-balancer-arn $ALB_ARN \
+            --query "Listeners[?Port==\`443\`].DefaultActions[0].TargetGroupArn | [0]" \
+            --output text)
+          echo "blue_tg_arn=$BLUE_TG_ARN" >> $GITHUB_OUTPUT
+
+          # Blue TG에 연결된 ASG 이름 조회
+          BLUE_ASG=$(aws autoscaling describe-auto-scaling-groups \
+            --query "AutoScalingGroups[?contains(TargetGroupARNs, '${BLUE_TG_ARN}')].AutoScalingGroupName | [0]" \
+            --output text)
+          echo "blue_asg=$BLUE_ASG" >> $GITHUB_OUTPUT
+
+          echo "=== 현재 Blue 환경 ==="
+          echo "  Listener ARN: $LISTENER_ARN"
+          echo "  Blue TG ARN:  $BLUE_TG_ARN"
+          echo "  Blue ASG:     $BLUE_ASG"
+
+      # ========================================
+      # 2단계: Green 환경 생성
+      # ========================================
+      - name: Create Green Target Group
+        id: green-tg
         run: |
-          echo "Waiting for instance refresh to complete..."
-          while true; do
-            STATUS=$(aws autoscaling describe-instance-refreshes \
-              --auto-scaling-group-name $ASG_NAME \
-              --region $AWS_REGION \
-              --query 'InstanceRefreshes[0].Status' \
-              --output text)
-            echo "Current status: $STATUS"
-            if [ "$STATUS" == "Successful" ]; then
-              echo "Instance refresh completed successfully!"
-              break
-            elif [ "$STATUS" == "Failed" ] || [ "$STATUS" == "Cancelled" ]; then
-              echo "Instance refresh failed with status: $STATUS"
-              exit 1
+          GREEN_TG_NAME="lp-gw-green-tg-${{ github.run_number }}"
+
+          GREEN_TG_ARN=$(aws elbv2 create-target-group \
+            --name "$GREEN_TG_NAME" \
+            --protocol HTTP \
+            --port 18080 \
+            --vpc-id $VPC_ID \
+            --target-type instance \
+            --health-check-protocol HTTP \
+            --health-check-port "18080" \
+            --health-check-path /actuator/health \
+            --health-check-interval-seconds 30 \
+            --health-check-timeout-seconds 5 \
+            --healthy-threshold-count 3 \
+            --unhealthy-threshold-count 2 \
+            --matcher HttpCode=200 \
+            --query "TargetGroups[0].TargetGroupArn" \
+            --output text)
+
+          echo "green_tg_arn=$GREEN_TG_ARN" >> $GITHUB_OUTPUT
+          echo "green_tg_name=$GREEN_TG_NAME" >> $GITHUB_OUTPUT
+          echo "Green TG 생성 완료: $GREEN_TG_NAME"
+
+      - name: Create Green ASG
+        id: green-asg
+        run: |
+          GREEN_ASG_NAME="lp-gw-green-asg-${{ github.run_number }}"
+
+          aws autoscaling create-auto-scaling-group \
+            --auto-scaling-group-name "$GREEN_ASG_NAME" \
+            --launch-template "LaunchTemplateId=${LAUNCH_TEMPLATE_ID},Version=\$Latest" \
+            --min-size 2 \
+            --max-size 5 \
+            --desired-capacity 2 \
+            --vpc-zone-identifier "$SUBNET_IDS" \
+            --target-group-arns "${{ steps.green-tg.outputs.green_tg_arn }}" \
+            --health-check-type ELB \
+            --health-check-grace-period 300 \
+            --tags \
+              "Key=Name,Value=loopang-gateway-green,PropagateAtLaunch=true" \
+              "Key=Environment,Value=green,PropagateAtLaunch=true" \
+              "Key=DeployRun,Value=${{ github.run_number }},PropagateAtLaunch=true"
+
+          # Green ASG에 Target Tracking 스케일링 정책 추가 (CPU 70%)
+          aws autoscaling put-scaling-policy \
+            --auto-scaling-group-name "$GREEN_ASG_NAME" \
+            --policy-name "${GREEN_ASG_NAME}-cpu-target-tracking" \
+            --policy-type TargetTrackingScaling \
+            --target-tracking-configuration '{
+              "PredefinedMetricSpecification": {
+                "PredefinedMetricType": "ASGAverageCPUUtilization"
+              },
+              "TargetValue": 70.0
+            }'
+
+          echo "green_asg=$GREEN_ASG_NAME" >> $GITHUB_OUTPUT
+          echo "Green ASG 생성 완료: $GREEN_ASG_NAME (인스턴스 2대 + CPU 70% 스케일링)"
+
+      # ========================================
+      # 3단계: Green 헬스체크 대기 (최대 20분)
+      # ========================================
+      - name: Wait for Green instances to be healthy
+        run: |
+          GREEN_TG_ARN="${{ steps.green-tg.outputs.green_tg_arn }}"
+          echo "Green TG 헬스체크 대기 중... (30초 간격, 최대 40회 = 20분)"
+
+          for i in $(seq 1 40); do
+            HEALTHY=$(aws elbv2 describe-target-health \
+              --target-group-arn "$GREEN_TG_ARN" \
+              --query "TargetHealthDescriptions[?TargetHealth.State=='healthy'] | length(@)" \
+              --output text 2>/dev/null || echo "0")
+
+            TOTAL=$(aws elbv2 describe-target-health \
+              --target-group-arn "$GREEN_TG_ARN" \
+              --query "TargetHealthDescriptions | length(@)" \
+              --output text 2>/dev/null || echo "0")
+
+            echo "[$i/40] Healthy: $HEALTHY / Total: $TOTAL"
+
+            if [ "$HEALTHY" -ge 2 ] 2>/dev/null; then
+              echo "Green 환경 정상! (${HEALTHY}개 인스턴스 healthy)"
+              exit 0
             fi
+
             sleep 30
           done
 
-      - name: Verify deployment (health check)
+          echo "ERROR: Green 헬스체크 타임아웃 (20분 초과)"
+          exit 1
+
+      # ========================================
+      # 4단계: ALB 트래픽을 Green으로 전환
+      # ========================================
+      - name: Switch ALB traffic to Green
         run: |
-          echo "Waiting for health check..."
-          sleep 60
-          HEALTH=$(curl -s -o /dev/null -w "%{http_code}" https://loopang.site/actuator/health || true)
-          if [ "$HEALTH" == "200" ]; then
-            echo "Health check passed! (HTTP 200)"
-          else
-            echo "Warning: Health check returned HTTP $HEALTH"
-            echo "Deployment may still be in progress. Please verify manually."
+          LISTENER_ARN="${{ steps.blue.outputs.listener_arn }}"
+          GREEN_TG_ARN="${{ steps.green-tg.outputs.green_tg_arn }}"
+
+          aws elbv2 modify-listener \
+            --listener-arn "$LISTENER_ARN" \
+            --default-actions "Type=forward,TargetGroupArn=${GREEN_TG_ARN}"
+
+          echo "=== ALB 트래픽 Green으로 전환 완료! ==="
+
+      # ========================================
+      # 5단계: 배포 후 헬스체크 검증
+      # ========================================
+      - name: Verify deployment health
+        run: |
+          echo "DNS 전파 대기 (30초)..."
+          sleep 30
+
+          for i in $(seq 1 5); do
+            HEALTH=$(curl -s -o /dev/null -w "%{http_code}" https://loopang.site/actuator/health || true)
+            if [ "$HEALTH" == "200" ]; then
+              echo "배포 검증 성공! Health check passed (HTTP 200)"
+              exit 0
+            fi
+            echo "시도 $i/5: HTTP $HEALTH, 재시도 중..."
+            sleep 10
+          done
+
+          echo "WARNING: Health check 응답 비정상 ($HEALTH). 수동 확인 필요."
+
+      # ========================================
+      # 6단계: Blue 환경 정리
+      # ========================================
+      - name: Cleanup Blue environment
+        if: success()
+        run: |
+          BLUE_ASG="${{ steps.blue.outputs.blue_asg }}"
+          BLUE_TG_ARN="${{ steps.blue.outputs.blue_tg_arn }}"
+
+          # Blue ASG 축소 → 삭제
+          if [ -n "$BLUE_ASG" ] && [ "$BLUE_ASG" != "None" ]; then
+            echo "Blue ASG 축소 중: $BLUE_ASG"
+            aws autoscaling update-auto-scaling-group \
+              --auto-scaling-group-name "$BLUE_ASG" \
+              --min-size 0 --max-size 0 --desired-capacity 0
+
+            echo "인스턴스 종료 대기 (60초)..."
+            sleep 60
+
+            echo "Blue ASG 삭제 중: $BLUE_ASG"
+            aws autoscaling delete-auto-scaling-group \
+              --auto-scaling-group-name "$BLUE_ASG" \
+              --force-delete || echo "WARNING: Blue ASG 삭제 실패 — 수동 삭제 필요"
           fi
+
+          # Blue TG 삭제
+          if [ -n "$BLUE_TG_ARN" ] && [ "$BLUE_TG_ARN" != "None" ]; then
+            echo "Blue TG 등록 해제 대기 (30초)..."
+            sleep 30
+            aws elbv2 delete-target-group \
+              --target-group-arn "$BLUE_TG_ARN" \
+              || echo "WARNING: Blue TG 삭제 실패 — 수동 삭제 필요"
+          fi
+
+          echo "=== Blue 환경 정리 완료! ==="
+
+      # ========================================
+      # 롤백: 배포 실패 시 자동 복원
+      # ========================================
+      - name: Rollback on failure
+        if: failure()
+        run: |
+          echo "=== 배포 실패! 자동 롤백 시작 ==="
+
+          # ALB를 Blue TG로 복원
+          LISTENER_ARN="${{ steps.blue.outputs.listener_arn }}"
+          BLUE_TG_ARN="${{ steps.blue.outputs.blue_tg_arn }}"
+          if [ -n "$LISTENER_ARN" ] && [ -n "$BLUE_TG_ARN" ] && [ "$BLUE_TG_ARN" != "None" ]; then
+            aws elbv2 modify-listener \
+              --listener-arn "$LISTENER_ARN" \
+              --default-actions "Type=forward,TargetGroupArn=${BLUE_TG_ARN}" 2>/dev/null || true
+            echo "ALB → Blue TG 복원 완료"
+          fi
+
+          # Green ASG 삭제
+          GREEN_ASG="${{ steps.green-asg.outputs.green_asg }}"
+          if [ -n "$GREEN_ASG" ]; then
+            aws autoscaling delete-auto-scaling-group \
+              --auto-scaling-group-name "$GREEN_ASG" \
+              --force-delete 2>/dev/null || true
+            echo "Green ASG 삭제 완료: $GREEN_ASG"
+          fi
+
+          # Green TG 삭제
+          GREEN_TG_ARN="${{ steps.green-tg.outputs.green_tg_arn }}"
+          if [ -n "$GREEN_TG_ARN" ]; then
+            echo "Green TG 등록 해제 대기 (30초)..."
+            sleep 30
+            aws elbv2 delete-target-group \
+              --target-group-arn "$GREEN_TG_ARN" 2>/dev/null || true
+            echo "Green TG 삭제 완료"
+          fi
+
+          echo "=== 롤백 완료 — 서비스는 Blue 환경에서 정상 운영 중 ==="
