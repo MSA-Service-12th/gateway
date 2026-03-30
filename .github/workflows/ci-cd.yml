@@ -184,6 +184,30 @@ jobs:
           echo "Green ASG 생성 완료: $GREEN_ASG_NAME (인스턴스 2대 + CPU 70% 스케일링)"
 
       # ========================================
+      # 2.5단계: Green TG를 ALB에 임시 연결 (헬스체크 활성화)
+      # Weight 1로 연결하여 ALB 헬스체크만 활성화 (트래픽 거의 없음)
+      # ========================================
+      - name: Register Green TG with ALB for health checks
+        run: |
+          LISTENER_ARN="${{ steps.blue.outputs.listener_arn }}"
+          BLUE_TG_ARN="${{ steps.blue.outputs.blue_tg_arn }}"
+          GREEN_TG_ARN="${{ steps.green-tg.outputs.green_tg_arn }}"
+
+          aws elbv2 modify-listener \
+            --listener-arn "$LISTENER_ARN" \
+            --default-actions "[{
+              \"Type\": \"forward\",
+              \"ForwardConfig\": {
+                \"TargetGroups\": [
+                  {\"TargetGroupArn\": \"${BLUE_TG_ARN}\", \"Weight\": 100},
+                  {\"TargetGroupArn\": \"${GREEN_TG_ARN}\", \"Weight\": 1}
+                ]
+              }
+            }]"
+
+          echo "Green TG를 ALB에 임시 연결 완료 (Blue:100, Green:1)"
+
+      # ========================================
       # 3단계: Green 헬스체크 대기 (최대 20분)
       # ========================================
       - name: Wait for Green instances to be healthy
@@ -247,7 +271,8 @@ jobs:
             sleep 10
           done
 
-          echo "WARNING: Health check 응답 비정상 ($HEALTH). 수동 확인 필요."
+          echo "ERROR: Health check 응답 비정상 ($HEALTH)"
+          exit 1
 
       # ========================================
       # 6단계: Blue 환경 정리
