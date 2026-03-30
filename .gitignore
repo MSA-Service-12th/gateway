@@ -43,5 +43,5 @@ out/
 .env
 *.pem
 CLAUDE.md
-docs/gateway-infra-summary.md
+ignoredocs/
 infra/
