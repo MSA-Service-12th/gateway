@@ -135,9 +135,9 @@ jobs:
             --health-check-protocol HTTP \
             --health-check-port "18080" \
             --health-check-path /actuator/health \
-            --health-check-interval-seconds 30 \
+            --health-check-interval-seconds 20 \
             --health-check-timeout-seconds 5 \
-            --healthy-threshold-count 3 \
+            --healthy-threshold-count 2 \
             --unhealthy-threshold-count 2 \
             --matcher HttpCode=200 \
             --query "TargetGroups[0].TargetGroupArn" \
@@ -183,14 +183,14 @@ jobs:
           echo "Green ASG 생성 완료: $GREEN_ASG_NAME (인스턴스 2대 + CPU 70% 스케일링)"
 
       # ========================================
-      # 3단계: Green 헬스체크 대기 (최대 약 7분)
+      # 3단계: Green 헬스체크 대기 (최대 20분)
       # ========================================
       - name: Wait for Green instances to be healthy
         run: |
           GREEN_TG_ARN="${{ steps.green-tg.outputs.green_tg_arn }}"
-          echo "Green TG 헬스체크 대기 중... (20초 간격, 최대 20회 = 약 7분)"
+          echo "Green TG 헬스체크 대기 중... (20초 간격, 최대 60회 = 20분)"
 
-          for i in $(seq 1 20); do
+          for i in $(seq 1 60); do
             HEALTHY=$(aws elbv2 describe-target-health \
               --target-group-arn "$GREEN_TG_ARN" \
               --query "TargetHealthDescriptions[?TargetHealth.State=='healthy'] | length(@)" \
@@ -201,7 +201,7 @@ jobs:
               --query "TargetHealthDescriptions | length(@)" \
               --output text 2>/dev/null || echo "0")
 
-            echo "[$i/20] Healthy: $HEALTHY / Total: $TOTAL"
+            echo "[$i/60] Healthy: $HEALTHY / Total: $TOTAL"
 
             if [ "$HEALTHY" -ge 2 ] 2>/dev/null; then
               echo "Green 환경 정상! (${HEALTHY}개 인스턴스 healthy)"
@@ -211,7 +211,7 @@ jobs:
             sleep 20
           done
 
-          echo "ERROR: Green 헬스체크 타임아웃 (약 7분 초과)"
+          echo "ERROR: Green 헬스체크 타임아웃 (20분 초과)"
           exit 1
 
       # ========================================
