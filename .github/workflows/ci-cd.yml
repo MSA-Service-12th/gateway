@@ -1,3 +1,4 @@
+# Launch Template v2: IAM Instance Profile 추가 완료 (loopang-gateway-ec2-profile)
 name: Gateway CI/CD (Blue/Green)
 
 on:
