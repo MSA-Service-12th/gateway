@@ -36,7 +36,9 @@ Client → Route53 (HTTPS)
 | ALB | HTTP→HTTPS 리디렉션, HTTPS→TG 전달 |
 | Target Group | HTTP:18080, health: /actuator/health |
 | Auto Scaling Group | min=2, max=5, CPU 70% Target Tracking |
-| Launch Template | User Data로 Docker 자동 실행 |
+| Launch Template | User Data로 Docker 자동 실행, IAM Instance Profile 포함 (v2) |
+| IAM Role | `loopang-gateway-ec2-role` (ECR ReadOnly) |
+| IAM Instance Profile | `loopang-gateway-ec2-profile` → Launch Template 연결 |
 | Route53 | ALB Alias A Record |
 | ACM | SSL/TLS 인증서 |
 
@@ -81,12 +83,26 @@ CloudFormation 템플릿으로 인프라 삭제 후 한 방에 복구 가능.
 
 **복구 소요 시간:** 약 15~20분
 
-## Blue/Green 배포 흐름 (예정)
+## Blue/Green 배포 흐름 (GitHub Actions 자동화 완료)
 
-1. Green ASG 생성 (GitHub Actions → 새 Docker 이미지)
-2. Green 헬스체크 + smoke test
-3. ALB 트래픽 전환 (Green 100%)
-4. Blue ASG 삭제
+1. Docker 이미지 빌드 → ECR 푸시 (latest + commit SHA)
+2. 현재 Blue 환경 정보 수집 (Listener ARN, Blue TG ARN, Blue ASG)
+3. Green Target Group 생성 (`lp-gw-green-tg-{run_number}`)
+4. Green ASG 생성 (`lp-gw-green-asg-{run_number}`, min=2, max=5)
+5. Green TG를 ALB에 임시 연결 (Blue:100, Green:1 가중치) — 헬스체크 활성화
+6. Green 인스턴스 헬스체크 대기 (최대 20분, 2개 이상 healthy)
+7. ALB HTTPS:443 리스너 → Green TG로 전환 (무중단)
+8. https://loopang.site/actuator/health 최종 검증
+9. Blue ASG 축소(0) → 삭제, Blue TG 삭제
+10. 실패 시 자동 롤백: ALB → Blue 복원, Green 리소스 삭제
+
+## GitHub Actions CI/CD
+
+- 워크플로우: `.github/workflows/ci-cd.yml`
+- CI 트리거: develop, main push + PR (빌드 + 테스트)
+- CD 트리거: main push only (Blue/Green 배포)
+- IAM 사용자: `loopang-github-actions` (ECR PowerUser + EC2/ASG/ELB FullAccess + PassRoleForGateway)
+- GitHub Secrets: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 
 ## 인프라 구축 진행 상황
 
@@ -98,5 +114,6 @@ CloudFormation 템플릿으로 인프라 삭제 후 한 방에 복구 가능.
 6. ✅ ALB + Target Group 생성
 7. ✅ Auto Scaling Group 생성
 8. ✅ Route53 설정 + 도메인 연결
-9. ⬜ GitHub Actions CI/CD
-10. ⬜ Blue/Green 배포 설정
+9. ✅ GitHub Actions CI/CD
+10. ✅ Blue/Green 배포 설정
+11. ✅ IAM Instance Profile 설정 (EC2 → ECR 접근용)
