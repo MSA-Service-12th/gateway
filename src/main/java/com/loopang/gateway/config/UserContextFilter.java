@@ -1,5 +1,7 @@
 package com.loopang.gateway.config;
 
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.cloud.gateway.filter.GatewayFilterChain;
@@ -59,11 +61,15 @@ public class UserContextFilter implements GlobalFilter, Ordered {
 
           log.debug("Global Filter - User Authenticated: {}", id);
 
+          name = (name != null)
+              ? URLEncoder.encode(name, StandardCharsets.UTF_8)
+              : "";
+
           // 헤더 UserData 추가 (기존 헤더 초기화 후 신규 설정)
           ServerHttpRequest request  = mutatedExchange.getRequest().mutate()
               .header(HEADER_USER_UUID, id != null ? id : "")
               .header(HEADER_EMAIL, email != null ? email : "")
-              .header(HEADER_USER_NAME, name != null ? name : "")
+              .header(HEADER_USER_NAME, name)
               .header(HEADER_SLACK_ID, slackId != null ? slackId : "")
               .header(HEADER_ROLE, role != null ? role : "")
               .header(HEADER_ENABLED, enabled != null ? enabled : "")
