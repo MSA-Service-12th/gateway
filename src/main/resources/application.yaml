@@ -4,6 +4,21 @@ server:
 spring:
   application:
     name: gateway
+  security:
+    oauth2:
+      resourceserver:
+        jwt:
+          # Keycloak에서 제공하는 공개키 경로를 자동으로 찾습니다.
+          issuer-uri: ${ISSUER_URI:http://localhost:3300/realms/my-realm}
+  cloud:
+    gateway:
+      server:
+        webflux:
+          routes:
+            - id: user-service
+              uri: lb://USER-SERVICE
+              predicates:
+                - Path=/api/**
 
 management:
   endpoints:
@@ -13,3 +28,14 @@ management:
   endpoint:
     health:
       show-details: always
+
+eureka:
+  client:
+    register-with-eureka: true
+    fetch-registry: true
+    service-url:
+      defaultZone: ${EUREKA_SERVER_URL:http://localhost:18761/eureka/}
+
+keycloak:
+  client-id: ${CLIENT_ID}
+  client-secret: ${CLIENT_SECRET}
