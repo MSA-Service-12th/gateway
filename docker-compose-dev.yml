@@ -4,9 +4,9 @@ services:
     container_name: postgres-keycloak
     restart: unless-stopped
     environment:
-      POSTGRES_DB: keycloak
-      POSTGRES_USER: keycloak
-      POSTGRES_PASSWORD: keycloak
+      POSTGRES_DB: ${DB:keycloak}
+      POSTGRES_USER: ${DB_USER:keycloak}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
       PGDATA: /var/lib/postgresql/data
     volumes:
       - postgres-keycloak-data:/var/lib/postgresql
