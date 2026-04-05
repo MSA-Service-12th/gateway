@@ -24,7 +24,7 @@ public class UserContextFilter implements GlobalFilter, Ordered {
   private static final String HEADER_EMAIL = "X-User-Email";
   private static final String HEADER_USER_NAME = "X-User-Name";
   private static final String HEADER_SLACK_ID = "X-User-Slack-Id";
-  private static final String HEADER_ROLE = "X-User-Roles";
+  private static final String HEADER_ROLE = "X-User-Role";
   private static final String HEADER_ENABLED = "X-User-Enabled"; // 배열로 들어오는 String 처리
 
 

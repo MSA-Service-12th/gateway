@@ -8,8 +8,7 @@ spring:
     oauth2:
       resourceserver:
         jwt:
-          # Keycloak에서 제공하는 공개키 경로를 자동으로 찾습니다.
-          issuer-uri: ${ISSUER_URI:http://localhost:3300/realms/my-realm}
+          issuer-uri: ${ISSUER_URI:http://localhost:13300/realms/my-realm}
   cloud:
     gateway:
       server:
@@ -18,7 +17,42 @@ spring:
             - id: user-service
               uri: lb://USER-SERVICE
               predicates:
-                - Path=/api/**
+                - Path=/api/users/**
+
+            - id: order-service
+              uri: lb://ORDER-SERVICE
+              predicates:
+                - Path=/api/orders/**
+
+            - id: hub-service
+              uri: lb://HUB-SERVICE
+              predicates:
+                - Path=/api/hubs/**
+
+            - id: hub-inventory-service
+              uri: lb://HUB-SERVICE
+              predicates:
+                - Path=/api/hub-inventories/**, /internal/hub-inventories/**
+
+            - id: hub-route-service
+              uri: lb://ROUTE-SERVICE
+              predicates:
+                - Path=/api/hub-routes/**
+
+            - id: company-service
+              uri: lb://COMPANY-SERVICE
+              predicates:
+                - Path=/api/companies/**
+
+            - id: item-service
+              uri: lb://ITEM-SERVICE
+              predicates:
+                - Path=/api/items/**
+
+            - id: delivery-service
+              uri: lb://DELIVERY-SERVICE
+              predicates:
+                - Path=/api/deliveries/**
 
 management:
   endpoints:

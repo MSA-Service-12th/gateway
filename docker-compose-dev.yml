@@ -36,7 +36,7 @@ services:
     command:
       - start-dev
     ports:
-      - '3300:8080'
+      - '13300:8080'
     depends_on:
       - postgres
     volumes:
