@@ -17,7 +17,9 @@ spring:
             - id: user-service
               uri: lb://USER-SERVICE
               predicates:
-                - Path=/api/users/**, /internal/users/**, /api/couriers/**, /internal/couriers/**
+                - Path=/api/users/**, /api/couriers/**
+              # /internal/** 경로는 gateway 라우팅에서 제외 — 내부 Feign 호출은 Eureka로 직접 도달하며,
+              # gateway가 권한 검증 없이 통과시키면(permitAll) 외부 노출 시 보안 구멍이 됨.
 
             - id: order-service
               uri: lb://ORDER-SERVICE
