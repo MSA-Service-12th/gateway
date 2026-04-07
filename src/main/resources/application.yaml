@@ -56,6 +56,11 @@ spring:
               predicates:
                 - Path=/api/deliveries/**
 
+            - id: message-service
+              uri: lb://MESSAGE-SERVICE
+              predicates:
+                - Path=/api/messages/**
+
 management:
   endpoints:
     web:
