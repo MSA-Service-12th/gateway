@@ -26,6 +26,8 @@ public class UserContextFilter implements GlobalFilter, Ordered {
   private static final String HEADER_SLACK_ID = "X-User-Slack-Id";
   private static final String HEADER_ROLE = "X-User-Role";
   private static final String HEADER_ENABLED = "X-User-Enabled"; // 배열로 들어오는 String 처리
+  private static final String HEADER_COMPANY_ID = "X-User-Company-Id";
+  private static final String HEADER_HUB_ID = "X-User-Hub-Id";
 
 
   public UserContextFilter() {
@@ -42,6 +44,8 @@ public class UserContextFilter implements GlobalFilter, Ordered {
           httpHeaders.remove(HEADER_SLACK_ID);
           httpHeaders.remove(HEADER_ROLE);
           httpHeaders.remove(HEADER_ENABLED);
+          httpHeaders.remove(HEADER_COMPANY_ID);
+          httpHeaders.remove(HEADER_HUB_ID);
         })
 //        .header(HEADER_TRACE_ID, traceId)
         .build();
@@ -57,6 +61,8 @@ public class UserContextFilter implements GlobalFilter, Ordered {
           String name = (String) claims.get("name");
           String slackId = (String) claims.get("slack_id");
           String enabled = (String) claims.get("is_enabled");
+          String companyId = (String) claims.get("companyId");
+          String hubId = (String) claims.get("hubId");
 
           // role은 Keycloak의 realm_access.roles 배열에서 추출한다.
           // Keycloak이 발행하는 JWT는 top-level "role" 클레임이 없고
@@ -77,6 +83,8 @@ public class UserContextFilter implements GlobalFilter, Ordered {
               .header(HEADER_SLACK_ID, slackId != null ? slackId : "")
               .header(HEADER_ROLE, role != null ? role : "")
               .header(HEADER_ENABLED, enabled != null ? enabled : "")
+              .header(HEADER_COMPANY_ID, companyId != null ? companyId : "")
+              .header(HEADER_HUB_ID, hubId != null ? hubId : "")
               .build();
 
           return exchange.mutate().request(request).build();
