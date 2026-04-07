@@ -37,6 +37,6 @@ public class StaticResourceConfig {
                         .contentType(MediaType.TEXT_HTML)
                         .body(BodyInserters.fromResource(indexHtml)))
                 // 그 외 정적 자원(/index.html, /favicon.ico, /static/**)은 classpath:/static/ 매핑
-                .andOther(RouterFunctions.resources("/**", new ClassPathResource("static/")));
+                .and(RouterFunctions.resources("/**", new ClassPathResource("static/")));
     }
 }
