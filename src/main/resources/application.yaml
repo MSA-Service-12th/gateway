@@ -14,7 +14,7 @@ spring:
       server:
         webflux:
           routes:
-            - id: item-service
+            - id: item-company-service
               uri: lb://ITEM-SERVICE
               predicates:
                 - Path=/api/companies/*/items, /api/companies/*/items/**
