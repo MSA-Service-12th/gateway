@@ -26,6 +26,8 @@ public class UserContextFilter implements GlobalFilter, Ordered {
   private static final String HEADER_SLACK_ID = "X-User-Slack-Id";
   private static final String HEADER_ROLE = "X-User-Role";
   private static final String HEADER_ENABLED = "X-User-Enabled"; // 배열로 들어오는 String 처리
+  private static final String HEADER_COMPANY_ID = "X-User-Company-Id";
+  private static final String HEADER_HUB_ID = "X-User-Hub-Id";
 
 
   public UserContextFilter() {
@@ -42,6 +44,8 @@ public class UserContextFilter implements GlobalFilter, Ordered {
           httpHeaders.remove(HEADER_SLACK_ID);
           httpHeaders.remove(HEADER_ROLE);
           httpHeaders.remove(HEADER_ENABLED);
+          httpHeaders.remove(HEADER_COMPANY_ID);
+          httpHeaders.remove(HEADER_HUB_ID);
         })
 //        .header(HEADER_TRACE_ID, traceId)
         .build();
@@ -57,11 +61,12 @@ public class UserContextFilter implements GlobalFilter, Ordered {
           String name = (String) claims.get("name");
           String slackId = (String) claims.get("slack_id");
           String enabled = (String) claims.get("is_enabled");
+          String companyId = (String) claims.get("companyId");
+          String hubId = (String) claims.get("hubId");
 
-          // role은 Keycloak의 realm_access.roles 배열에서 추출한다.
-          // Keycloak이 발행하는 JWT는 top-level "role" 클레임이 없고
-          // realm_access: { roles: [...] } 형태로 저장하기 때문이다.
-          String role = extractRoleFromRealmAccess(claims);
+          // role은 user-service가 Keycloak 사용자 attributes에 박는 top-level "role" 클레임에서 직접 추출한다.
+          // user-service의 KeycloakIdentityProvider가 회원가입 시 ROLE_MASTER/HUB/DELIVERY/COMPANY 형식으로 저장한다.
+          String role = (String) claims.get("role");
 
           log.debug("Global Filter - User Authenticated: {}", id);
 
@@ -77,6 +82,8 @@ public class UserContextFilter implements GlobalFilter, Ordered {
               .header(HEADER_SLACK_ID, slackId != null ? slackId : "")
               .header(HEADER_ROLE, role != null ? role : "")
               .header(HEADER_ENABLED, enabled != null ? enabled : "")
+              .header(HEADER_COMPANY_ID, companyId != null ? companyId : "")
+              .header(HEADER_HUB_ID, hubId != null ? hubId : "")
               .build();
 
           return exchange.mutate().request(request).build();
@@ -88,45 +95,5 @@ public class UserContextFilter implements GlobalFilter, Ordered {
   @Override
   public int getOrder() {
     return SecurityWebFiltersOrder.AUTHORIZATION.getOrder() + 1;
-  }
-
-  /**
-   * Keycloak JWT의 {@code realm_access.roles} 배열에서 우리 시스템의 단일 role을 추출한다.
-   *
-   * <p>Keycloak이 기본으로 발행하는 JWT는 top-level {@code role} 클레임이 없고
-   * 대신 다음과 같은 구조를 사용한다:
-   * <pre>
-   * "realm_access": {
-   *   "roles": ["MASTER", "default-roles-my-realm", "offline_access", ...]
-   * }
-   * </pre>
-   *
-   * <p>우리 시스템에서 사용하는 4개 role(MASTER/HUB/DELIVERY/COMPANY) 중 하나를
-   * 골라 {@code ROLE_} 프리픽스를 붙여 반환한다. 우선순위는 MASTER > HUB > DELIVERY > COMPANY.
-   * 매칭되는 role이 없으면 빈 문자열 반환.</p>
-   */
-  @SuppressWarnings("unchecked")
-  private String extractRoleFromRealmAccess(Map<String, Object> claims) {
-    Object realmAccessObj = claims.get("realm_access");
-    if (!(realmAccessObj instanceof Map)) {
-      return "";
-    }
-    Map<String, Object> realmAccess = (Map<String, Object>) realmAccessObj;
-
-    Object rolesObj = realmAccess.get("roles");
-    if (!(rolesObj instanceof java.util.List<?> roles)) {
-      return "";
-    }
-
-    if (roles.contains("MASTER")) {
-      return "ROLE_MASTER";
-    } else if (roles.contains("HUB")) {
-      return "ROLE_HUB";
-    } else if (roles.contains("DELIVERY")) {
-      return "ROLE_DELIVERY";
-    } else if (roles.contains("COMPANY")) {
-      return "ROLE_COMPANY";
-    }
-    return "";
   }
 }
